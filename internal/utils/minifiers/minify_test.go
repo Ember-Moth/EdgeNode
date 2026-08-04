@@ -4,6 +4,7 @@
 package minifiers
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"strings"
@@ -100,6 +101,45 @@ func TestMinifyResponse_JS(t *testing.T) {
 		t.Fatal("js should be minified, got:", got)
 	}
 	t.Log("minified js:", got)
+}
+
+// 超过 8MB 上限的响应必须完整透传，不得被截断
+func TestMinifyResponse_OverLimitNotTruncated(t *testing.T) {
+	var config = &serverconfigs.HTTPPageOptimizationConfig{
+		HTML: &serverconfigs.HTTPHTMLOptimizationConfig{IsOn: true},
+	}
+	if err := config.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 构造 ~10MB 的 HTML(超过 8MB 上限)
+	var raw = bytes.Repeat([]byte("<div>  padding content  </div>\n"), 350000)
+	if len(raw) <= 8<<20 {
+		t.Fatal("测试数据应超过 8MB")
+	}
+
+	// 模拟 chunked:ContentLength 未知(-1)
+	var resp = &http.Response{
+		Header:        http.Header{"Content-Type": []string{"text/html"}},
+		Body:          io.NopCloser(bytes.NewReader(raw)),
+		ContentLength: -1,
+	}
+
+	if err := MinifyResponse(config, "https://example.com/", resp); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(raw) {
+		t.Fatalf("响应被截断:got %d bytes, want %d(完整原文)", len(got), len(raw))
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatal("超限响应内容应与原文逐字节一致(未压缩、未截断)")
+	}
+	t.Logf("✓ 超限响应完整透传 %d 字节,未截断", len(got))
 }
 
 func TestMinifyResponse_Skip(t *testing.T) {

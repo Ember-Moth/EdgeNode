@@ -31,6 +31,12 @@ func (this *HTTPRequest) processHTTP3Headers(respHeader http.Header) {
 		}
 	}
 
+	// 仅在该端口的 HTTP/3 监听器确实已启动时才发布 Alt-Svc，
+	// 否则会把客户端引导到一个连不上的端口，触发 QUIC 失败回退，反而拖慢访问。
+	if sharedListenerManager == nil || !sharedListenerManager.HasHTTP3Listener(policy.Port) {
+		return
+	}
+
 	// 不覆盖已有的Alt-Svc（可能来自源站）
 	if len(respHeader.Get("Alt-Svc")) > 0 {
 		return

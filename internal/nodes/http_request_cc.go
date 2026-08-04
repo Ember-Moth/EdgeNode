@@ -5,13 +5,13 @@ package nodes
 
 import (
 	"encoding/binary"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/TeaOSLab/EdgeCommon/pkg/serverconfigs"
 	"github.com/TeaOSLab/EdgeCommon/pkg/serverconfigs/firewallconfigs"
-	"github.com/TeaOSLab/EdgeNode/internal/utils"
 	"github.com/TeaOSLab/EdgeNode/internal/utils/counters"
 	"github.com/TeaOSLab/EdgeNode/internal/waf"
 	"github.com/cespare/xxhash/v2"
@@ -62,8 +62,18 @@ func ccKeyHash(prefix byte, serverId int64, remoteIP string, path string, period
 func (this *HTTPRequest) doCC() (block bool) {
 	var ccConfig = this.web.CC
 
+	// 放行本机自身发起的回环请求（如内部探活）。
+	// 注意：这里只认「裸连接对端」的回环地址，不用 X-Forwarded-For 派生的 IP——
+	// 否则客户端发 X-Forwarded-For: 127.0.0.1 即可让 IsLocalIP 成立、整段绕过 CC。
+	// 只判回环（非全部内网）也保证前置私网 LB 部署下 CC 仍生效。
+	if host, _, splitErr := net.SplitHostPort(this.RawReq.RemoteAddr); splitErr == nil {
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return
+		}
+	}
+
 	var remoteIP = this.requestRemoteAddr(true)
-	if len(remoteIP) == 0 || utils.IsLocalIP(remoteIP) {
+	if len(remoteIP) == 0 {
 		return
 	}
 

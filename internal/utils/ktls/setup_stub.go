@@ -5,9 +5,8 @@ package ktls
 
 import "crypto/tls"
 
-// Supported 报告本构建是否包含 kTLS 密钥提取能力。
-// 该能力依赖 unsafe 访问 crypto/tls 私有布局，属版本锁定的手法，默认不编译；
-// 需显式以 -tags ktls 构建方可启用。
+// Supported 报告本平台是否包含 kTLS 密钥提取能力。
+// kTLS 依赖 Linux 内核的 TLS ULP,仅在 Linux 上编译实现;其它平台返回 false。
 func Supported() bool { return false }
 
 // EnableServerTX 在未启用 ktls 构建标签时不可用

@@ -213,6 +213,14 @@ func (this *ListenerManager) applyHTTP3Listeners(nodeConfig *nodeconfigs.NodeCon
 	}
 }
 
+// HasHTTP3Listener 报告指定端口的 HTTP/3 监听器是否已成功启动
+func (this *ListenerManager) HasHTTP3Listener(port int) bool {
+	this.locker.Lock()
+	defer this.locker.Unlock()
+	_, ok := this.http3ListenersMap[port]
+	return ok
+}
+
 // TotalActiveConnections 获取总的活跃连接数
 func (this *ListenerManager) TotalActiveConnections() int {
 	this.locker.Lock()

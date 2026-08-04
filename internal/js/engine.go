@@ -30,20 +30,21 @@ type Script struct {
 	hash    uint64 // 代码内容哈希，用于组合缓存键的廉价计算
 }
 
-// Engine 脚本引擎
+// Engine 脚本引擎。
+//
+// 隔离模型：每次 Run 使用一个全新的 goja.Runtime，运行后即丢弃。
+// 这样脚本对全局对象的任何改动——显式全局赋值(globalThis.x=)、内置原型污染
+// (Array.prototype.x=)、把注入的桥接对象存到全局(globalThis.r=request)——都不会
+// 残留到后续请求，杜绝跨请求/跨租户泄漏。运行时创建开销约 0.5µs，相对脚本执行可忽略。
+// 编译产物(*goja.Program)是不可变的，可安全跨运行时复用，故仍做编译缓存。
 type Engine struct {
 	programs         sync.Map // hash => *Script（单脚本，供语法校验/错误上报）
-	combinedPrograms sync.Map // combineKey => *goja.Program（整批IIFE程序，实际执行体）
-	pool             sync.Pool
+	combinedPrograms sync.Map // combineKey => *goja.Program（整批程序，实际执行体）
 }
 
 // NewEngine 创建脚本引擎
 func NewEngine() *Engine {
-	var engine = &Engine{}
-	engine.pool.New = func() any {
-		return engine.newRuntime()
-	}
-	return engine
+	return &Engine{}
 }
 
 func (this *Engine) newRuntime() *goja.Runtime {
@@ -79,7 +80,9 @@ func (this *Engine) Compile(code string) (*Script, error) {
 	return actual.(*Script), nil
 }
 
-// 把整批脚本包进一个IIFE，编译并缓存。IIFE使脚本的顶层声明成为函数局部，运行后不污染全局。
+// 把整批脚本包进一个IIFE后编译并缓存。IIFE让同一批脚本共享一层函数作用域
+// （公共脚本定义的函数对请求脚本可见），同时把顶层声明约束在该作用域内。
+// 跨请求隔离由“每次 Run 全新运行时”保证（见 Engine 文档），不依赖此处。
 // 组合缓存键由各脚本的内容哈希拼成（廉价），仅在未命中时才重建完整源码，避免每次运行都拼接大字符串。
 func (this *Engine) combine(scripts []*Script) (*goja.Program, error) {
 	var key = combineKey(scripts)
@@ -128,25 +131,12 @@ func (this *Engine) Run(scripts []*Script, globals map[string]any, timeout time.
 		return err
 	}
 
-	var vm = this.pool.Get().(*goja.Runtime)
-
-	// reusable 标记运行结束后运行时是否可安全归还池中；发生panic则丢弃。
-	var reusable = false
+	// 每次运行使用全新运行时并丢弃，保证请求间零状态残留（见 Engine 文档）
+	var vm = this.newRuntime()
 
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("script panic: %v", r)
-		}
-
-		// 删除注入的全局对象（可配置属性，可删除）；脚本自身的声明在IIFE内不会污染全局。
-		var globalObject = vm.GlobalObject()
-		for name := range globals {
-			_ = globalObject.Delete(name)
-		}
-
-		if reusable {
-			vm.ClearInterrupt()
-			this.pool.Put(vm)
 		}
 	}()
 
@@ -157,8 +147,7 @@ func (this *Engine) Run(scripts []*Script, globals map[string]any, timeout time.
 		}
 	}
 
-	// 看门狗：超时打断脚本。用done/join确保看门狗在运行时归还池之前必定退出，
-	// 从而Interrupt绝不会作用到已被其他请求取用的运行时。
+	// 看门狗：超时打断脚本。用done/join确保看门狗 goroutine 必定退出，不泄漏。
 	var done = make(chan struct{})
 	var watchdogDone = make(chan struct{})
 	go func() {
@@ -175,11 +164,8 @@ func (this *Engine) Run(scripts []*Script, globals map[string]any, timeout time.
 	_, err = vm.RunProgram(program)
 
 	close(done)
-	<-watchdogDone // 等待看门狗退出，之后不会再有Interrupt调用
+	<-watchdogDone // 等待看门狗退出
 
-	if err == nil {
-		reusable = true
-	}
 	return err
 }
 

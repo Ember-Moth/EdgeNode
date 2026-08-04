@@ -38,25 +38,29 @@ func MinifyResponse(config *serverconfigs.HTTPPageOptimizationConfig, url string
 		return nil
 	}
 
-	// 读取响应体
-	var body []byte
-	var err error
+	// 已知超过上限：直接透传原始流，不读取、不优化
 	if resp.ContentLength > maxMinifyBodySize {
 		return nil
 	}
-	body, err = io.ReadAll(io.LimitReader(resp.Body, maxMinifyBodySize+1))
-	_ = resp.Body.Close()
+
+	// 读取至多 max+1 字节以判断是否超限；注意不能提前关闭原始流，
+	// 否则超限时无法把剩余内容补回，会造成响应截断。
+	var origBody = resp.Body
+	body, err := io.ReadAll(io.LimitReader(origBody, maxMinifyBodySize+1))
 	if err != nil {
-		// 读取失败：返回错误由调用方处理
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		resp.ContentLength = int64(len(body))
+		// 读取失败：把已读部分与剩余原始流拼接后交回，由调用方处理错误
+		resp.Body = &multiReadCloser{reader: io.MultiReader(bytes.NewReader(body), origBody), closer: origBody}
 		return err
 	}
 	if len(body) > maxMinifyBodySize {
-		// 超限：原样返回，不做优化
-		resp.Body = io.NopCloser(bytes.NewReader(body))
+		// 超过上限（含 chunked 长度未知的情况）：透传完整响应，不做优化、不截断。
+		// 用 MultiReader 把已读的前缀与尚未读取的剩余流拼回，Close 仍关原始流。
+		resp.Body = &multiReadCloser{reader: io.MultiReader(bytes.NewReader(body), origBody), closer: origBody}
 		return nil
 	}
+
+	// 未超限说明原始流已读尽，可安全关闭
+	_ = origBody.Close()
 
 	var buf = &bytes.Buffer{}
 	err = minifier.Minify(sharedMinifier, buf, bytes.NewReader(body), nil)
@@ -120,3 +124,12 @@ func newHTMLMinifier(htmlConfig *serverconfigs.HTTPHTMLOptimizationConfig) *html
 
 // 共享的minify引擎，minifier通过参数直接传入，无需注册表
 var sharedMinifier = minify.New()
+
+// multiReadCloser 把 Reader 与独立的 Closer 组合，用于超限透传时拼接已读前缀与原始流剩余部分
+type multiReadCloser struct {
+	reader io.Reader
+	closer io.Closer
+}
+
+func (this *multiReadCloser) Read(p []byte) (int, error) { return this.reader.Read(p) }
+func (this *multiReadCloser) Close() error               { return this.closer.Close() }

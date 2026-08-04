@@ -145,6 +145,13 @@ func TestHTTPRequest_ProcessHTTP3Headers(t *testing.T) {
 		1: {IsOn: true, Port: 8443},
 	})
 
+	// Alt-Svc 现在要求该端口的 HTTP/3 监听器确实已启动:注入一个占位监听器
+	var oldManager = sharedListenerManager
+	sharedListenerManager = &ListenerManager{
+		http3ListenersMap: map[int]*HTTP3Listener{8443: {}},
+	}
+	defer func() { sharedListenerManager = oldManager }()
+
 	var newRequest = func(userAgent string) *HTTPRequest {
 		rawReq, err := http.NewRequest(http.MethodGet, "https://"+testHTTP3Domain+"/", nil)
 		if err != nil {

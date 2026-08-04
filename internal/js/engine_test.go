@@ -158,22 +158,31 @@ func TestEngine_Concurrent(t *testing.T) {
 func TestEngine_NoGlobalLeak(t *testing.T) {
 	var engine = js.NewEngine()
 
-	// 反复运行以尽量命中同一池化运行时
+	// 反复运行,验证任何形式的全局写入都不跨请求残留
 	for i := 0; i < 20; i++ {
-		// 租户A声明全局变量与函数
-		sA, err := engine.Compile(`var tenantSecret = "AAA"; function helperA() { return 1 }`)
+		// 租户A:声明顶层符号、显式写全局对象、污染内置原型、把桥接对象存到全局
+		sA, err := engine.Compile(`
+			var tenantSecret = "AAA";
+			function helperA() { return 1 }
+			globalThis.__leaked = "SECRET";
+			Array.prototype.__poison = 42;
+			globalThis.__savedCtx = (typeof ctx !== "undefined") ? ctx : null;
+		`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := engine.Run([]*js.Script{sA}, nil, time.Second); err != nil {
+		if err := engine.Run([]*js.Script{sA}, map[string]any{"ctx": &leakBridge{}}, time.Second); err != nil {
 			t.Fatal(err)
 		}
 
-		// 租户B尝试读取A的全局符号，应全部不可见
+		// 租户B:尝试读取A的所有残留,应全部不可见
 		var bridge = &leakBridge{}
 		sB, err := engine.Compile(`
-			ctx.report("v", typeof tenantSecret);
-			ctx.report("f", typeof helperA);
+			ctx.report("var", typeof tenantSecret);
+			ctx.report("func", typeof helperA);
+			ctx.report("global", typeof globalThis.__leaked);
+			ctx.report("proto", typeof [].__poison);
+			ctx.report("savedCtx", typeof globalThis.__savedCtx);
 		`)
 		if err != nil {
 			t.Fatal(err)
@@ -182,11 +191,10 @@ func TestEngine_NoGlobalLeak(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if bridge.report["v"] != "undefined" {
-			t.Fatalf("变量泄漏: tenantSecret 应为 undefined，实际 %q", bridge.report["v"])
-		}
-		if bridge.report["f"] != "undefined" {
-			t.Fatalf("函数泄漏: helperA 应为 undefined，实际 %q", bridge.report["f"])
+		for _, key := range []string{"var", "func", "global", "proto", "savedCtx"} {
+			if bridge.report[key] != "undefined" {
+				t.Fatalf("run %d: 泄漏[%s]=%q,应为 undefined", i, key, bridge.report[key])
+			}
 		}
 	}
 }

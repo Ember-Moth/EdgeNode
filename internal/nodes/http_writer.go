@@ -863,6 +863,12 @@ func (this *HTTPWriter) SetSentHeaderBytes(sentHeaderBytes int64) {
 	this.sentHeaderBytes = sentHeaderBytes
 }
 
+// SetSentBodyBytes 设置已发送的 body 字节数。用于绕过 writer 直发（如 kTLS sendfile）时回填，
+// 使访问日志的 BytesSent/BodyBytesSent 准确。
+func (this *HTTPWriter) SetSentBodyBytes(sentBodyBytes int64) {
+	this.sentBodyBytes = sentBodyBytes
+}
+
 // WriteHeader 写入状态码
 func (this *HTTPWriter) WriteHeader(statusCode int) {
 	if this.statusSent {

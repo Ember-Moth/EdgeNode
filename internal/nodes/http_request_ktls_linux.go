@@ -103,20 +103,21 @@ func (this *HTTPRequest) sendFileKTLS(fp *os.File, offset int64, size int64, sta
 		return true // 已接管且已启用 kTLS，无法回退，只能结束
 	}
 
-	var sent int64
 	if err = rawWriteAll(syscallConn, head); err != nil {
 		return true
 	}
-	sent += int64(len(head))
 
 	var sfOffset = offset
-	n, sfErr := rawSendfile(syscallConn, int(fp.Fd()), &sfOffset, size)
-	sent += n
+	bodySent, sfErr := rawSendfile(syscallConn, int(fp.Fd()), &sfOffset, size)
 	_ = sfErr // 发送错误（如客户端断开）无需特殊处理，连接随后关闭
 
+	// 连接级流量计费回填（绕过了 ClientConn.Write）
 	if clientConn != nil {
-		clientConn.AddSentBytes(sent)
+		clientConn.AddSentBytes(int64(len(head)) + bodySent)
 	}
+	// 按请求访问日志回填（绕过了 writer 计数）
+	this.writer.SetSentHeaderBytes(int64(len(head)))
+	this.writer.SetSentBodyBytes(bodySent)
 	return true
 }
 

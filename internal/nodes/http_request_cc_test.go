@@ -35,6 +35,36 @@ func testNewCCRequest(serverId int64, remoteAddr string, path string, ccConfig *
 	return req, recorder
 }
 
+// 伪造 X-Forwarded-For 为回环地址不得绕过 CC(裸连接为真实公网 IP)
+func TestHTTPRequest_DoCC_SpoofedXFFNotBypassed(t *testing.T) {
+	const serverId = 91009
+	var ccConfig = &serverconfigs.HTTPCCConfig{
+		IsOn: true,
+		Thresholds: []*serverconfigs.HTTPCCThreshold{
+			{Period: 60, MaxRequests: 1, BlockSeconds: 0},
+		},
+	}
+
+	var newReq = func() (*HTTPRequest, *httptest.ResponseRecorder) {
+		req, rec := testNewCCRequest(serverId, "203.0.113.77:5555", "/", ccConfig)
+		req.RawReq.Header.Set("X-Forwarded-For", "127.0.0.1") // 伪造成回环
+		return req, rec
+	}
+
+	// 第一次放行
+	if req, _ := newReq(); req.doCC() {
+		t.Fatal("first request should pass")
+	}
+	// 第二次应被拦截 —— 证明伪造的回环 XFF 未让 CC 跳过
+	req, rec := newReq()
+	if !req.doCC() {
+		t.Fatal("spoofed X-Forwarded-For: 127.0.0.1 不应绕过 CC")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", rec.Code)
+	}
+}
+
 func TestHTTPRequest_DoCC_MaxRequests(t *testing.T) {
 	const serverId = 91001
 	const remoteAddr = "203.0.113.10:12345"

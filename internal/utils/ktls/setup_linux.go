@@ -113,6 +113,13 @@ func SelfTest() error {
 	if TLSVersion(state.version) != VersionTLS13 || state.isClient || len(state.outTrafficSecret) == 0 {
 		return errors.New("ktls: selftest layout mismatch (version/isClient/secret) —— crypto/tls 布局可能已变动")
 	}
+	// 断言 cipherSuite 偏移正确：必须是已知的 TLS1.3 套件,否则密钥调度会选错 hash/长度
+	switch state.cipherSuite {
+	case tlsAES128GCMSHA256, tlsAES256GCMSHA384, tlsCHACHA20POLY1305SHA256:
+		// ok
+	default:
+		return errors.New("ktls: selftest unexpected cipherSuite —— 镜像 cipherSuite 偏移可能错位")
+	}
 
 	keyLogMu.Lock()
 	var content = keyLog.String()
@@ -168,22 +175,6 @@ func EnableServerTX(conn *tls.Conn) (fd int, err error) {
 		return -1, err
 	}
 
-	fd, err = rawConnFd(conn)
-	if err != nil {
-		return -1, err
-	}
-
-	if err = EnableULP(fd); err != nil {
-		return -1, err
-	}
-	if err = Enable(fd, TX, km); err != nil {
-		return -1, err
-	}
-	return fd, nil
-}
-
-// rawConnFd 通过公开的 NetConn() 取底层 TCP 的裸文件描述符（不依赖 unsafe）
-func rawConnFd(conn *tls.Conn) (int, error) {
 	var netConn = conn.NetConn()
 	syscallConn, ok := netConn.(syscall.Conn)
 	if !ok {
@@ -193,12 +184,23 @@ func rawConnFd(conn *tls.Conn) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	var fd int = -1
-	err = rawConn.Control(func(f uintptr) {
+
+	// setsockopt 必须在 Control 回调内执行：Go 运行时仅在回调期间保证 fd 不被关闭/复用
+	fd = -1
+	var setErr error
+	ctlErr := rawConn.Control(func(f uintptr) {
 		fd = int(f)
+		if e := EnableULP(fd); e != nil {
+			setErr = e
+			return
+		}
+		setErr = Enable(fd, TX, km)
 	})
-	if err != nil {
-		return -1, err
+	if ctlErr != nil {
+		return -1, ctlErr
+	}
+	if setErr != nil {
+		return -1, setErr
 	}
 	return fd, nil
 }

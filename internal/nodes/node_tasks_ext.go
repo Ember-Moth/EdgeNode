@@ -127,5 +127,6 @@ func (this *Node) execNetworkSecurityPolicyChangedTask(rpcClient *rpc.RPCClient)
 }
 
 func (this *Node) execPlanChangedTask(rpcClient *rpc.RPCClient) error {
+	// stub
 	return nil
 }
