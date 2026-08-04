@@ -1047,6 +1047,9 @@ func (this *Node) onReload(config *nodeconfigs.NodeConfig, reloadAll bool) {
 
 	// 刷新IP库
 	this.reloadIPLibrary()
+
+	// 刷新公共脚本
+	_ = this.reloadCommonScripts()
 }
 
 // reload server config

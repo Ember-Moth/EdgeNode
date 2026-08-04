@@ -13,8 +13,9 @@ import (
 )
 
 func (this *Node) execScriptsChangedTask() error {
-	// stub
-	return nil
+	// 公共脚本随节点配置下发，这里重新同步配置，onReload会随之刷新脚本
+	remotelogs.Println("NODE", "syncing config for scripts change ...")
+	return this.syncConfig(0)
 }
 
 func (this *Node) execUAMPolicyChangedTask(rpcClient *rpc.RPCClient) error {
