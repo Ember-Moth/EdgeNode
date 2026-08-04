@@ -313,7 +313,7 @@ func (this *HTTPRequest) doRoot() (isBreak bool) {
 
 	// kTLS 零拷贝：对符合条件的 HTTPS TLS1.3 完整文件响应，接管连接并用 sendfile 内核加密直发
 	if this.canUseKTLSSendFile(fileSize, len(ranges) > 0) {
-		if this.sendFileKTLS(fileReader, fileSize) {
+		if this.sendFileKTLS(fileReader, 0, fileSize, http.StatusOK) {
 			return true
 		}
 	}

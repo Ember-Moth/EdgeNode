@@ -613,6 +613,15 @@ func (this *HTTPRequest) doCacheRead(useStale bool) (shouldStop bool) {
 				return true
 			}
 		} else { // 没有Range
+			// kTLS 零拷贝：磁盘缓存命中时，直接从缓存文件 sendfile 到 socket（内核加密）
+			if fileReader, isFileReader := reader.(*caches.FileReader); isFileReader && this.canUseKTLSCacheHit(reader.BodySize()) {
+				if this.sendFileKTLS(fileReader.FP(), fileReader.BodyOffset(), reader.BodySize(), reader.Status()) {
+					this.isCached = true
+					this.cacheRef = nil
+					return true
+				}
+			}
+
 			var resp = &http.Response{
 				Body:          reader,
 				ContentLength: reader.BodySize(),

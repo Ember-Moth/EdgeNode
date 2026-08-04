@@ -386,6 +386,11 @@ func (this *FileReader) FP() *os.File {
 	return this.fp.Raw()
 }
 
+// BodyOffset 返回缓存文件中 body 数据的起始偏移，供 sendfile 零拷贝定位
+func (this *FileReader) BodyOffset() int64 {
+	return this.bodyOffset
+}
+
 func (this *FileReader) Close() error {
 	if this.isClosed {
 		return nil

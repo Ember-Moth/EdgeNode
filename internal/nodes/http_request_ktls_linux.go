@@ -5,6 +5,7 @@ package nodes
 
 import (
 	"crypto/tls"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -20,40 +21,53 @@ import (
 // kTLS 零拷贝路径的最小文件大小：低于此值时 hijack+setsockopt 的开销以及丢失 keep-alive 不划算
 const kTLSMinFileSize = 64 << 10 // 64KB
 
-// canUseKTLSSendFile 判断当前静态文件响应是否可走 kTLS 零拷贝路径。
-// 约束（任一不满足则回退到常规写入链，保持 keep-alive 与全部变换/缓存/计费行为）：
-//   - kTLS 已启用且为 HTTPS TLS1.3
-//   - GET 且完整文件（无 Range）
-//   - 文件足够大
-//   - 无压缩/WebP 等响应体变换（sendfile 发送的是原始字节）
-//   - 不需要边写边缓存（sendfile 无法同时 tee 到缓存）
-func (this *HTTPRequest) canUseKTLSSendFile(fileSize int64, hasRanges bool) bool {
+// ktlsEligibleBase 判断 kTLS 零拷贝的通用前提（静态文件与缓存命中共用）。
+func (this *HTTPRequest) ktlsEligibleBase(size int64) bool {
 	if !teaconst.KTLSEnabled || !this.IsHTTPS {
 		return false
 	}
 	if this.RawReq.TLS == nil || this.RawReq.TLS.Version != tls.VersionTLS13 {
 		return false
 	}
-	if this.RawReq.Method != http.MethodGet || hasRanges || fileSize < kTLSMinFileSize {
+	if this.RawReq.Method != http.MethodGet || size < kTLSMinFileSize {
 		return false
 	}
-	if this.web != nil {
-		if this.web.Compression != nil && this.web.Compression.IsOn {
-			return false
-		}
-		if this.web.WebP != nil && this.web.WebP.IsOn {
-			return false
-		}
-	}
-	if this.cacheRef != nil {
+	// WebP 会变换图片响应体，sendfile 发送的是原始字节，不适用
+	if this.web != nil && this.web.WebP != nil && this.web.WebP.IsOn {
 		return false
 	}
 	return true
 }
 
-// sendFileKTLS 通过内核 TLS 卸载 + sendfile 零拷贝发送整个文件。
-// 返回 true 表示已接管并完成响应（无论成功与否，调用方不应再写响应）。
-func (this *HTTPRequest) sendFileKTLS(fileReader *os.File, fileSize int64) (handled bool) {
+// canUseKTLSSendFile 判断静态文件（doRoot）响应是否可走 kTLS 零拷贝。
+// 约束：通用前提 + 完整文件（无 Range）+ 无压缩 + 不边写缓存（sendfile 无法 tee）。
+func (this *HTTPRequest) canUseKTLSSendFile(fileSize int64, hasRanges bool) bool {
+	if !this.ktlsEligibleBase(fileSize) || hasRanges || this.cacheRef != nil {
+		return false
+	}
+	if this.web != nil && this.web.Compression != nil && this.web.Compression.IsOn {
+		return false
+	}
+	return true
+}
+
+// canUseKTLSCacheHit 判断缓存命中（doCacheRead 无 Range 分支）是否可走 kTLS 零拷贝。
+// 若配置了压缩且响应尚未编码，writer 会对原始内容做压缩，此时不能直接 sendfile 缓存字节；
+// 但若响应已带 Content-Encoding（缓存的即为压缩变体，是最终字节），则可直接 sendfile。
+func (this *HTTPRequest) canUseKTLSCacheHit(bodySize int64) bool {
+	if !this.ktlsEligibleBase(bodySize) {
+		return false
+	}
+	if this.web != nil && this.web.Compression != nil && this.web.Compression.IsOn &&
+		this.writer.Header().Get("Content-Encoding") == "" {
+		return false
+	}
+	return true
+}
+
+// sendFileKTLS 通过内核 TLS 卸载 + sendfile 零拷贝发送 fp 中 [offset, offset+size) 的字节。
+// status 为响应状态码。返回 true 表示已接管并完成响应（无论成功与否，调用方不应再写响应）。
+func (this *HTTPRequest) sendFileKTLS(fp *os.File, offset int64, size int64, status int) (handled bool) {
 	// 接管连接（此后 net/http 不再管理该连接，我们负责写完整响应并关闭）
 	conn, _, err := this.writer.Hijack()
 	if err != nil || conn == nil {
@@ -70,14 +84,14 @@ func (this *HTTPRequest) sendFileKTLS(fileReader *os.File, fileSize int64) (hand
 	}()
 
 	var clientConn = clientConnOfTLS(tlsConn)
-	var head = this.buildKTLSResponseHead(fileSize)
+	var head = this.buildKTLSResponseHead(status, size)
 
 	_, err = ktls.EnableServerTX(tlsConn)
 	if err != nil {
 		// kTLS 启用失败（如非 TLS1.3 / 内核不支持）：退回用户态 TLS 写入，仍然正确，只是无零拷贝。
 		// 经 tls.Conn.Write -> ClientConn.Write，计费照常。
 		if _, wErr := tlsConn.Write(head); wErr == nil {
-			_, _ = this.copyFileUserspace(tlsConn, fileReader)
+			_, _ = this.copyFileUserspace(tlsConn, fp, offset, size)
 		}
 		return true
 	}
@@ -95,7 +109,8 @@ func (this *HTTPRequest) sendFileKTLS(fileReader *os.File, fileSize int64) (hand
 	}
 	sent += int64(len(head))
 
-	n, sfErr := rawSendfile(syscallConn, int(fileReader.Fd()), fileSize)
+	var sfOffset = offset
+	n, sfErr := rawSendfile(syscallConn, int(fp.Fd()), &sfOffset, size)
 	sent += n
 	_ = sfErr // 发送错误（如客户端断开）无需特殊处理，连接随后关闭
 
@@ -106,10 +121,10 @@ func (this *HTTPRequest) sendFileKTLS(fileReader *os.File, fileSize int64) (hand
 }
 
 // buildKTLSResponseHead 依据已就绪的响应头构造 HTTP/1.1 响应头部（状态行 + 头 + 空行）
-func (this *HTTPRequest) buildKTLSResponseHead(fileSize int64) []byte {
+func (this *HTTPRequest) buildKTLSResponseHead(status int, contentLength int64) []byte {
 	var header = this.writer.Header()
 	if header.Get("Content-Length") == "" {
-		header.Set("Content-Length", strconv.FormatInt(fileSize, 10))
+		header.Set("Content-Length", strconv.FormatInt(contentLength, 10))
 	}
 	if header.Get("Date") == "" {
 		header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
@@ -117,15 +132,21 @@ func (this *HTTPRequest) buildKTLSResponseHead(fileSize int64) []byte {
 	// kTLS 路径单请求单连接
 	header.Set("Connection", "close")
 
+	var statusText = http.StatusText(status)
+	if len(statusText) == 0 {
+		statusText = "OK"
+	}
+
 	var builder strings.Builder
-	builder.WriteString("HTTP/1.1 200 OK\r\n")
+	builder.WriteString("HTTP/1.1 " + strconv.Itoa(status) + " " + statusText + "\r\n")
 	_ = header.Write(&builder)
 	builder.WriteString("\r\n")
 	return []byte(builder.String())
 }
 
-// copyFileUserspace 用户态回退拷贝
-func (this *HTTPRequest) copyFileUserspace(dst *tls.Conn, src *os.File) (int64, error) {
+// copyFileUserspace 用户态回退拷贝 fp 中 [offset, offset+size) 到 dst
+func (this *HTTPRequest) copyFileUserspace(dst *tls.Conn, fp *os.File, offset int64, size int64) (int64, error) {
+	var src = io.NewSectionReader(fp, offset, size)
 	var pool = this.bytePool(0)
 	var buf = pool.Get()
 	defer pool.Put(buf)
@@ -185,9 +206,9 @@ func rawWriteAll(sc syscall.RawConn, data []byte) error {
 	return writeErr
 }
 
-// rawSendfile 在非阻塞 fd 上用 sendfile 发送 srcFd 的前 size 字节，经 poller 等待可写
-func rawSendfile(sc syscall.RawConn, srcFd int, size int64) (int64, error) {
-	var offset int64
+// rawSendfile 在非阻塞 fd 上用 sendfile 从 *offset 起发送 srcFd 的 size 字节，经 poller 等待可写。
+// offset 指针由内核在每次 sendfile 后推进，不影响 srcFd 的文件位置（并发读安全）。
+func rawSendfile(sc syscall.RawConn, srcFd int, offset *int64, size int64) (int64, error) {
 	var sent int64
 	var sfErr error
 	ctlErr := sc.Write(func(fd uintptr) bool {
@@ -196,7 +217,7 @@ func rawSendfile(sc syscall.RawConn, srcFd int, size int64) (int64, error) {
 			if chunk > 1<<30 {
 				chunk = 1 << 30
 			}
-			n, e := unix.Sendfile(int(fd), srcFd, &offset, int(chunk))
+			n, e := unix.Sendfile(int(fd), srcFd, offset, int(chunk))
 			if n > 0 {
 				sent += int64(n)
 			}

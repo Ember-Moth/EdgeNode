@@ -9,6 +9,10 @@ func (this *HTTPRequest) canUseKTLSSendFile(fileSize int64, hasRanges bool) bool
 	return false
 }
 
-func (this *HTTPRequest) sendFileKTLS(fileReader *os.File, fileSize int64) (handled bool) {
+func (this *HTTPRequest) canUseKTLSCacheHit(bodySize int64) bool {
+	return false
+}
+
+func (this *HTTPRequest) sendFileKTLS(fp *os.File, offset int64, size int64, status int) (handled bool) {
 	return false
 }
