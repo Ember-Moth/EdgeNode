@@ -89,7 +89,34 @@ func (this *Node) execHTTP3PolicyChangedTask(rpcClient *rpc.RPCClient) error {
 }
 
 func (this *Node) execHTTPPagesPolicyChangedTask(rpcClient *rpc.RPCClient) error {
-	// stub
+	remotelogs.Println("NODE", "updating http pages policies ...")
+	resp, err := rpcClient.NodeRPC.FindNodeHTTPPagesPolicies(rpcClient.Context(), &pb.FindNodeHTTPPagesPoliciesRequest{})
+	if err != nil {
+		return err
+	}
+	var policyMap = map[int64]*nodeconfigs.HTTPPagesPolicy{}
+	for _, policy := range resp.HttpPagesPolicies {
+		if len(policy.HttpPagesPolicyJSON) == 0 {
+			continue
+		}
+		var pagesPolicy = nodeconfigs.NewHTTPPagesPolicy()
+		err = json.Unmarshal(policy.HttpPagesPolicyJSON, pagesPolicy)
+		if err != nil {
+			remotelogs.Error("NODE", "decode http pages policy failed: "+err.Error())
+			continue
+		}
+		err = pagesPolicy.Init()
+		if err != nil {
+			remotelogs.Error("NODE", "initialize http pages policy failed: "+err.Error())
+			continue
+		}
+		policyMap[policy.NodeClusterId] = pagesPolicy
+	}
+
+	if sharedNodeConfig == nil {
+		return nil
+	}
+	sharedNodeConfig.UpdateHTTPPagesPolicies(policyMap)
 	return nil
 }
 
