@@ -23,7 +23,34 @@ func (this *Node) execUAMPolicyChangedTask(rpcClient *rpc.RPCClient) error {
 }
 
 func (this *Node) execHTTPCCPolicyChangedTask(rpcClient *rpc.RPCClient) error {
-	// stub
+	remotelogs.Println("NODE", "updating http cc policies ...")
+	resp, err := rpcClient.NodeRPC.FindNodeHTTPCCPolicies(rpcClient.Context(), &pb.FindNodeHTTPCCPoliciesRequest{})
+	if err != nil {
+		return err
+	}
+	var policyMap = map[int64]*nodeconfigs.HTTPCCPolicy{}
+	for _, policy := range resp.HttpCCPolicies {
+		if len(policy.HttpCCPolicyJSON) == 0 {
+			continue
+		}
+		var ccPolicy = nodeconfigs.NewHTTPCCPolicy()
+		err = json.Unmarshal(policy.HttpCCPolicyJSON, ccPolicy)
+		if err != nil {
+			remotelogs.Error("NODE", "decode http cc policy failed: "+err.Error())
+			continue
+		}
+		err = ccPolicy.Init()
+		if err != nil {
+			remotelogs.Error("NODE", "initialize http cc policy failed: "+err.Error())
+			continue
+		}
+		policyMap[policy.NodeClusterId] = ccPolicy
+	}
+
+	if sharedNodeConfig == nil {
+		return nil
+	}
+	sharedNodeConfig.UpdateHTTPCCPolicies(policyMap)
 	return nil
 }
 
