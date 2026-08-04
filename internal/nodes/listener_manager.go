@@ -36,8 +36,9 @@ func init() {
 
 // ListenerManager 端口监听管理器
 type ListenerManager struct {
-	listenersMap  map[string]*Listener // addr => *Listener
-	http3Listener *HTTPListener
+	listenersMap      map[string]*Listener   // addr => *Listener
+	http3ListenersMap map[int]*HTTP3Listener // port => *HTTP3Listener
+	hasFailedHTTP3    bool
 
 	locker     sync.Mutex
 	lastConfig *nodeconfigs.NodeConfig
@@ -54,10 +55,11 @@ type ListenerManager struct {
 // NewListenerManager 获取新对象
 func NewListenerManager() *ListenerManager {
 	var manager = &ListenerManager{
-		listenersMap:     map[string]*Listener{},
-		retryListenerMap: map[string]*Listener{},
-		ticker:           time.NewTicker(1 * time.Minute),
-		firewalld:        firewalls.NewFirewalld(),
+		listenersMap:      map[string]*Listener{},
+		http3ListenersMap: map[int]*HTTP3Listener{},
+		retryListenerMap:  map[string]*Listener{},
+		ticker:            time.NewTicker(1 * time.Minute),
+		firewalld:         firewalls.NewFirewalld(),
 	}
 
 	// 提升测试效率
@@ -158,10 +160,57 @@ func (this *ListenerManager) Start(nodeConfig *nodeconfigs.NodeConfig) error {
 		}
 	}
 
+	// HTTP/3
+	this.applyHTTP3Listeners(nodeConfig)
+
 	// 加入到firewalld
 	go this.addToFirewalld(groupAddrs)
 
 	return nil
+}
+
+// 应用HTTP/3监听器
+// 调用时需要已经持有locker
+func (this *ListenerManager) applyHTTP3Listeners(nodeConfig *nodeconfigs.NodeConfig) {
+	this.hasFailedHTTP3 = false
+
+	var ports []int
+	var group *serverconfigs.ServerAddressGroup
+	if nodeConfig != nil && nodeConfig.IsOn {
+		group = nodeConfig.HTTP3Group()
+		if len(group.Servers()) > 0 {
+			ports = nodeConfig.FindHTTP3Ports()
+		}
+	}
+
+	// 停掉不再需要的
+	for port, listener := range this.http3ListenersMap {
+		if !lists.ContainsInt(ports, port) {
+			remotelogs.Println("LISTENER_MANAGER", "close http3 ':"+types.String(port)+"'")
+			_ = listener.Close()
+			delete(this.http3ListenersMap, port)
+		}
+	}
+
+	// 启动新的或重载既有的
+	for _, port := range ports {
+		listener, ok := this.http3ListenersMap[port]
+		if ok {
+			listener.Reload(group)
+			continue
+		}
+
+		remotelogs.Println("LISTENER_MANAGER", "listen http3 ':"+types.String(port)+"'")
+		listener = NewHTTP3Listener(group, port)
+		err := listener.Listen()
+		if err != nil {
+			// 放入重试，由retryListeners()周期性重试
+			this.hasFailedHTTP3 = true
+			remotelogs.Error("LISTENER_MANAGER", "listen http3 ':"+types.String(port)+"' failed: "+err.Error())
+			continue
+		}
+		this.http3ListenersMap[port] = listener
+	}
 }
 
 // TotalActiveConnections 获取总的活跃连接数
@@ -174,8 +223,8 @@ func (this *ListenerManager) TotalActiveConnections() int {
 		total += listener.listener.CountActiveConnections()
 	}
 
-	if this.http3Listener != nil {
-		total += this.http3Listener.CountActiveConnections()
+	for _, listener := range this.http3ListenersMap {
+		total += listener.CountActiveConnections()
 	}
 
 	return total
@@ -205,6 +254,11 @@ func (this *ListenerManager) retryListeners() {
 			this.listenersMap[addr] = listener
 			remotelogs.ServerSuccess(listener.group.FirstServer().Id, "LISTENER_MANAGER", "retry to listen '"+addr+"' successfully", nodeconfigs.NodeLogTypeListenAddressFailed, maps.Map{"address": addr})
 		}
+	}
+
+	// 重试HTTP/3
+	if this.hasFailedHTTP3 && this.lastConfig != nil {
+		this.applyHTTP3Listeners(this.lastConfig)
 	}
 }
 
