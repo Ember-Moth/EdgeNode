@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/TeaOSLab/EdgeCommon/pkg/serverconfigs"
@@ -19,7 +20,8 @@ import (
 // 单次优化的最大响应体，超过则跳过，避免占用过多内存
 const maxMinifyBodySize = 8 << 20 // 8MB
 
-// MinifyResponse minify response body
+// MinifyResponse minify response body.
+// url 参数当前未参与压缩决策，保留以匹配调用点签名，并为将来按URL细分压缩规则预留。
 func MinifyResponse(config *serverconfigs.HTTPPageOptimizationConfig, url string, resp *http.Response) error {
 	if config == nil || !config.IsOn() || resp == nil || resp.Body == nil {
 		return nil
@@ -68,7 +70,7 @@ func MinifyResponse(config *serverconfigs.HTTPPageOptimizationConfig, url string
 	var newBody = buf.Bytes()
 	resp.Body = io.NopCloser(bytes.NewReader(newBody))
 	resp.ContentLength = int64(len(newBody))
-	resp.Header.Set("Content-Length", intToString(len(newBody)))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
 	return nil
 }
 
@@ -118,17 +120,3 @@ func newHTMLMinifier(htmlConfig *serverconfigs.HTTPHTMLOptimizationConfig) *html
 
 // 共享的minify引擎，minifier通过参数直接传入，无需注册表
 var sharedMinifier = minify.New()
-
-func intToString(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	var i = len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
-}

@@ -10,10 +10,16 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
-// calculateFingerprint 依据TLS ClientHello计算客户端指纹
-// 采用JA3风格：将客户端在握手中声明的能力（TLS版本、加密套件、扩展相关的曲线/点格式/ALPN/签名算法）
-// 拼接后做xxhash，得到一个稳定的8字节指纹。同一类客户端（浏览器/爬虫/攻击工具）通常产生相同指纹，
-// 供CC等模块在IP之外增加一个识别维度。
+// calculateFingerprint 依据TLS ClientHello计算客户端指纹。
+//
+// 取ClientHello中客户端声明的能力（TLS版本、加密套件、椭圆曲线、点格式、签名算法、ALPN），
+// 过滤掉GREASE占位值后拼接做xxhash，得到8字节指纹。
+//
+// 说明与局限：
+//   - 这是JA3“风格”的近似，而非严格JA3：tls.ClientHelloInfo不暴露扩展(extensions)的原始列表与顺序，
+//     因此指纹的区分维度弱于完整JA3；
+//   - 已过滤GREASE（RFC 8701）以避免同一客户端因随机GREASE值导致指纹漂移，但无法消除扩展乱序带来的差异；
+//   - 因此该指纹适合作为CC等场景在IP之外的“辅助”识别维度，不应作为唯一可信标识。
 func (this *BaseListener) calculateFingerprint(clientInfo *tls.ClientHelloInfo) []byte {
 	if clientInfo == nil {
 		return nil
@@ -21,25 +27,35 @@ func (this *BaseListener) calculateFingerprint(clientInfo *tls.ClientHelloInfo) 
 
 	var digest = xxhash.New()
 	var buf [2]byte
+	var writeUint16 = func(v uint16) {
+		binary.BigEndian.PutUint16(buf[:], v)
+		_, _ = digest.Write(buf[:])
+	}
 
-	// TLS支持的版本
+	// TLS支持的版本（过滤GREASE）
 	for _, version := range clientInfo.SupportedVersions {
-		binary.BigEndian.PutUint16(buf[:], version)
-		_, _ = digest.Write(buf[:])
+		if isGREASE(version) {
+			continue
+		}
+		writeUint16(version)
 	}
 	_, _ = digest.Write([]byte{'|'})
 
-	// 加密套件
+	// 加密套件（过滤GREASE）
 	for _, suite := range clientInfo.CipherSuites {
-		binary.BigEndian.PutUint16(buf[:], suite)
-		_, _ = digest.Write(buf[:])
+		if isGREASE(suite) {
+			continue
+		}
+		writeUint16(suite)
 	}
 	_, _ = digest.Write([]byte{'|'})
 
-	// 椭圆曲线
+	// 椭圆曲线（过滤GREASE）
 	for _, curve := range clientInfo.SupportedCurves {
-		binary.BigEndian.PutUint16(buf[:], uint16(curve))
-		_, _ = digest.Write(buf[:])
+		if isGREASE(uint16(curve)) {
+			continue
+		}
+		writeUint16(uint16(curve))
 	}
 	_, _ = digest.Write([]byte{'|'})
 
@@ -47,10 +63,12 @@ func (this *BaseListener) calculateFingerprint(clientInfo *tls.ClientHelloInfo) 
 	_, _ = digest.Write(clientInfo.SupportedPoints)
 	_, _ = digest.Write([]byte{'|'})
 
-	// 签名算法
+	// 签名算法（过滤GREASE）
 	for _, scheme := range clientInfo.SignatureSchemes {
-		binary.BigEndian.PutUint16(buf[:], uint16(scheme))
-		_, _ = digest.Write(buf[:])
+		if isGREASE(uint16(scheme)) {
+			continue
+		}
+		writeUint16(uint16(scheme))
 	}
 	_, _ = digest.Write([]byte{'|'})
 
@@ -64,4 +82,11 @@ func (this *BaseListener) calculateFingerprint(clientInfo *tls.ClientHelloInfo) 
 	var result = make([]byte, 8)
 	binary.BigEndian.PutUint64(result, sum)
 	return result
+}
+
+// isGREASE 判断是否为GREASE占位值（RFC 8701）。
+// GREASE值为 0x0a0a, 0x1a1a, ..., 0xfafa —— 高低字节相同且低半字节为0xa。
+func isGREASE(v uint16) bool {
+	var low = byte(v)
+	return byte(v>>8) == low && (low&0x0f) == 0x0a
 }

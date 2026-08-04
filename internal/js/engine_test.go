@@ -154,6 +154,65 @@ func TestEngine_Concurrent(t *testing.T) {
 	wg.Wait()
 }
 
+// 脚本在顶层声明的全局变量/函数不应泄漏到下一次运行（跨请求/跨租户隔离）
+func TestEngine_NoGlobalLeak(t *testing.T) {
+	var engine = js.NewEngine()
+
+	// 反复运行以尽量命中同一池化运行时
+	for i := 0; i < 20; i++ {
+		// 租户A声明全局变量与函数
+		sA, err := engine.Compile(`var tenantSecret = "AAA"; function helperA() { return 1 }`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.Run([]*js.Script{sA}, nil, time.Second); err != nil {
+			t.Fatal(err)
+		}
+
+		// 租户B尝试读取A的全局符号，应全部不可见
+		var bridge = &leakBridge{}
+		sB, err := engine.Compile(`
+			ctx.report("v", typeof tenantSecret);
+			ctx.report("f", typeof helperA);
+		`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.Run([]*js.Script{sB}, map[string]any{"ctx": bridge}, time.Second); err != nil {
+			t.Fatal(err)
+		}
+
+		if bridge.report["v"] != "undefined" {
+			t.Fatalf("变量泄漏: tenantSecret 应为 undefined，实际 %q", bridge.report["v"])
+		}
+		if bridge.report["f"] != "undefined" {
+			t.Fatalf("函数泄漏: helperA 应为 undefined，实际 %q", bridge.report["f"])
+		}
+	}
+}
+
+type leakBridge struct {
+	report map[string]string
+}
+
+func (this *leakBridge) Report(key string, value string) {
+	if this.report == nil {
+		this.report = map[string]string{}
+	}
+	this.report[key] = value
+}
+
+// Compile 缓存命中时应比对原文，哈希碰撞不应返回错误脚本（此处验证正常缓存路径不被误伤）
+func TestEngine_CompileCacheReturnsSameCode(t *testing.T) {
+	var engine = js.NewEngine()
+	const code = `var x = 1`
+	s1, _ := engine.Compile(code)
+	s2, _ := engine.Compile(code)
+	if s1 != s2 {
+		t.Fatal("identical code should hit cache and return the same *Script")
+	}
+}
+
 // 运行结束后，池化运行时不应残留对上次globals的引用
 func TestEngine_GlobalsCleared(t *testing.T) {
 	var engine = js.NewEngine()
