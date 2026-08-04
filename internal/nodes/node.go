@@ -215,6 +215,9 @@ func (this *Node) Start() {
 	// 发送事件
 	events.Notify(events.EventLoaded)
 
+	// 初始化内核 TLS 卸载（kTLS）
+	this.setupKTLS()
+
 	// 设置rlimit
 	_ = utils.SetRLimit(1 << 20)
 

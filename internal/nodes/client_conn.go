@@ -152,6 +152,19 @@ func (this *ClientConn) Read(b []byte) (n int, err error) {
 	return
 }
 
+// AddSentBytes 记录绕过 Write 直接发往 socket 的字节数（如 kTLS 下的 sendfile 零拷贝），
+// 使连接级流量/带宽统计与按请求计费保持完整。
+func (this *ClientConn) AddSentBytes(n int64) {
+	if n <= 0 {
+		return
+	}
+	atomic.AddInt64(&this.totalSentBytes, n)
+	if this.serverId > 0 && (!this.isNoStat || Tea.IsTesting()) {
+		atomic.AddUint64(&teaconst.OutTrafficBytes, uint64(n))
+		stats.SharedBandwidthStatManager.AddBandwidth(this.userId, this.userPlanId, this.serverId, n, n)
+	}
+}
+
 func (this *ClientConn) Write(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil

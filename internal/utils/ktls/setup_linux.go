@@ -1,5 +1,5 @@
 // Copyright 2026 GoEdge goedge.cdn@gmail.com. All rights reserved. Official site: https://goedge.cloud .
-//go:build linux && ktls
+//go:build linux
 
 package ktls
 
@@ -24,7 +24,7 @@ import (
 // ErrNotTLS13 表示连接不是 TLS 1.3（kTLS 密钥提取当前仅支持 TLS 1.3）
 var ErrNotTLS13 = errors.New("ktls: only TLS 1.3 is supported")
 
-// Supported 报告本构建是否包含 kTLS 密钥提取能力（需以 -tags ktls 构建）
+// Supported 报告本平台是否包含 kTLS 密钥提取能力（Linux 默认编译）
 func Supported() bool { return true }
 
 // SelfTest 在运行时验证 unsafe 结构体镜像与当前 Go 版本的 crypto/tls 布局一致。

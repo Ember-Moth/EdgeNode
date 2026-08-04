@@ -29,6 +29,10 @@ var (
 
 	IsQuiting    = false // 是否正在退出
 	EnableDBStat = false // 是否开启本地数据库统计
+
+	// KTLSEnabled 是否启用内核 TLS 卸载（由启动时的 ktls.SelfTest 结果决定；
+	// 可用环境变量 EDGE_KTLS=0 强制关闭）
+	KTLSEnabled = false
 )
 
 // 检查是否为主程序

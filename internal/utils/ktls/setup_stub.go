@@ -1,5 +1,5 @@
 // Copyright 2026 GoEdge goedge.cdn@gmail.com. All rights reserved. Official site: https://goedge.cloud .
-//go:build !linux || !ktls
+//go:build !linux
 
 package ktls
 

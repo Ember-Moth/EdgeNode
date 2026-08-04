@@ -1,5 +1,5 @@
 // Copyright 2026 GoEdge goedge.cdn@gmail.com. All rights reserved. Official site: https://goedge.cloud .
-//go:build linux && ktls
+//go:build linux
 
 // 本文件通过 unsafe 镜像 crypto/tls 的私有结构，提取 TLS 会话密钥物料以配置内核 kTLS。
 //
