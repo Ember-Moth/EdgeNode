@@ -25,6 +25,7 @@ require (
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/quic-go/quic-go v0.61.0
 	github.com/shirou/gopsutil/v3 v3.24.5
+	github.com/tdewolff/minify/v2 v2.24.14
 	golang.org/x/exp v0.0.0-20260727155853-b88d891fe743
 	golang.org/x/image v0.44.0
 	golang.org/x/net v0.57.0
@@ -62,6 +63,7 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/shoenig/go-m1cpu v0.2.2 // indirect
+	github.com/tdewolff/parse/v2 v2.8.14 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
